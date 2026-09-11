@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>mumabingdu</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background-color: #1e6fff;
+    overflow: hidden;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    cursor: pointer;
+  }
+  .float-img {
+    position: absolute;
+    width: 32vw;
+    max-width: 220px;
+    pointer-events: none;
+    opacity: 0;
+    animation: popOut 0.5s ease forwards;
+  }
+  .float-letter {
+    position: absolute;
+    font-size: 20vw;
+    font-weight: bold;
+    color: #fff;
+    pointer-events: none;
+    text-shadow: 0 2px 12px rgba(0,0,0,.25);
+    opacity: 0;
+    animation: popOut 0.5s ease forwards;
+    font-family: "Segoe UI", Arial, sans-serif;
+    white-space: nowrap;
+  }
+  @keyframes popOut {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(.6); }
+    20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+    40%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(.9); }
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<audio id="bgm" src="好想你.mp3" preload="auto"></audio>
+<script>
+  const stage   = document.getElementById('stage');
+  const bgm     = document.getElementById('bgm');
+  const IMG1    = '图片1.jpg';
+  const IMG2    = '图片2.jpg';
+  const LETTERS = ['m','i','s','s','y','o','u'];
+
+  // 预加载图片
+  new Image().src = IMG1;
+  new Image().src = IMG2;
+
+  let clickCount     = 0;
+  let phase          = 0;   // 0: 音频前  1: 字母阶段  2: 图片2阶段
+  let letterIndex    = 0;
+  let isAudioPlaying = false;
+  let wantAudio      = false;  // 已进入“该播放音频”的阶段
+  let audioRetry     = false;  // 上次播放被浏览器拦截，等待下次点击重试
+  let audioTries     = 0;
+  let unlocked       = false;  // 音频是否已在用户手势中解锁
+  let lastTapTime    = 0;
+
+  // 在用户的首次真实手势里“解锁”音频（iOS / 微信 / 安卓浏览器都需要）
+  function unlockAudio() {
+    if (unlocked) return;
+    unlocked = true;
+    try {
+      bgm.load();
+      const p = bgm.play();
+      // 同步立即暂停复位：既完成解锁又不会真的出声
+      bgm.pause();
+      bgm.currentTime = 0;
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+  }
+
+  // 微信内置浏览器桥就绪后再预热一次
+  function wxReady(fn) {
+    if (typeof WeixinJSBridge === 'undefined') {
+      document.addEventListener('WeixinJSBridgeReady', fn, false);
+    } else { fn(); }
+  }
+  wxReady(() => { try { bgm.load(); } catch (e) {} });
+
+  // 正式播放音频；被自动播放策略拦截时不推进流程，等待下一次点击重试
+  function startAudio() {
+    isAudioPlaying = true;
+    try { bgm.currentTime = 0; } catch (e) {}
+    let p;
+    try { p = bgm.play(); } catch (e) { p = Promise.reject(e); }
+    if (p && p.then) {
+      p.then(() => {
+        audioRetry = false;
+        bgm.onended = () => {
+          isAudioPlaying = false;
+          wantAudio = false;
+          phase = 1;
+          clickCount = 0;
+        };
+      }).catch(() => {
+        audioTries++;
+        isAudioPlaying = false;
+        if (audioTries >= 6) {
+          // 极端情况下始终无法播放，则保底推进，避免流程卡死
+          audioRetry = false;
+          wantAudio = false;
+          phase = 1;
+          clickCount = 0;
+        } else {
+          audioRetry = true; // 下一次点击继续尝试播放
+        }
+      });
+    }
+  }
+
+  // 随机位置（保证不超出屏幕）
+  function placeRandom(el) {
+    const w  = window.innerWidth;
+    const h  = window.innerHeight;
+    const ew = el.offsetWidth  || 120;
+    const eh = el.offsetHeight || 120;
+    const pad = 8;
+    const x = pad + Math.random() * Math.max(1, w  - ew - pad * 2);
+    const y = pad + Math.random() * Math.max(1, h  - eh - pad * 2);
+    el.style.left = (x + ew / 2) + 'px';
+    el.style.top  = (y + eh / 2) + 'px';
+  }
+
+  function showImage(src) {
+    const img = new Image();
+    img.src = src;
+    img.className = 'float-img';
+    stage.appendChild(img);
+    const place = () => placeRandom(img);
+    if (img.complete) place();
+    else img.onload = place;
+    // 兜底：再下一帧定位一次（防止尺寸未就绪）
+    requestAnimationFrame(() => requestAnimationFrame(place));
+    setTimeout(() => img.remove(), 500);
+  }
+
+  function showLetter(ch) {
+    const el = document.createElement('div');
+    el.className = 'float-letter';
+    el.textContent = ch;
+    stage.appendChild(el);
+    requestAnimationFrame(() => requestAnimationFrame(() => placeRandom(el)));
+    setTimeout(() => el.remove(), 500);
+  }
+
+  function handleTap(e) {
+    e.preventDefault();
+    // 防止 touchstart + click 重复触发
+    const now = Date.now();
+    if (now - lastTapTime < 80) return;
+    lastTapTime = now;
+
+    // 任意一次点击都先确保音频已解锁（必须在用户手势调用栈内）
+    unlockAudio();
+
+    // 音频等待重试：本次点击直接用于再次触发播放，不计入次数
+    if (audioRetry) { startAudio(); return; }
+
+    if (isAudioPlaying) return; // 音频播放中忽略点击
+
+    clickCount++;
+
+    if (phase === 0) {
+      if (clickCount < 6) {
+        showImage(IMG1);
+      } else {
+        // 第 6 次：只播放音频
+        wantAudio = true;
+        startAudio();
+      }
+    } else if (phase === 1) {
+      if (clickCount < 6) {
+        showImage(IMG1);
+      } else {
+        // 第 6 次：显示字母
+        showLetter(LETTERS[letterIndex]);
+        letterIndex++;
+        clickCount = 0;
+        if (letterIndex >= LETTERS.length) {
+          phase = 2;
+        }
+      }
+    } else {
+      // phase 2：永远是图片2
+      showImage(IMG2);
+    }
+  }
+
+  stage.addEventListener('touchstart', handleTap, { passive: false });
+  stage.addEventListener('click', handleTap);
+</script>
+</body>
+</html>
